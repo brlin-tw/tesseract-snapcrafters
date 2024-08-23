@@ -19,11 +19,110 @@ jobs:
     steps:
       - name: 🔄 Sync version with upstream
         uses: snapcrafters/ci/sync-version@main
+        shell: bash
         with:
           token: ${{ secrets.SNAPCRAFTERS_BOT_COMMIT }}
           update-script: |
-            echo "Change me!"
-            # This should be a script that looks for a new upstream version, and modifies the
-            # snapcraft.yaml accordingly. For examples, take a look at:
-            # - https://github.com/snapcrafters/mattermost-desktop/blob/candidate/.github/workflows/sync-version-with-upstream.yml
-            # - https://github.com/snapcrafters/discord/blob/candidate/.github/workflows/sync-version-with-upstream.yml
+            printf 'Info: Querying the Tesseract GitHub release information...\n'
+            curl_opts=(
+              # Don't print progress meter but still show errors
+              --silent
+              --show-error
+
+              # Follow redirection
+              --location
+            )
+            if ! github_releases_raw="$(
+              curl \
+                "${curl_opts[@]}" \
+                https://api.github.com/repos/tesseract-ocr/tesseract/releases
+              )"; then
+              printf \
+                'Error: Unable to query the Tesseract releases information.\n' \
+                1>&2
+              exit 2
+            fi
+
+            printf 'Info: Querying the release tags from the Tesseract GitHub release information...\n'
+            jq_opts=(
+              # Show raw strings without quoting
+              --raw-output
+            )
+            if ! release_tags="$(
+              jq \
+                "${jq_opts[@]}" \
+                .[].tag_name \
+                <<<"${github_releases_raw}"
+              )"; then
+              printf \
+                'Error: Unable to query the release tags from the Tesseract GitHub release information.\n' \
+                1>&2
+              exit 2
+            fi
+
+            printf 'Info: Filtering out stable release tags from the release tags...\n'
+            grep_opts=(
+              # Show lines that don't match the regexp
+              --invert-match
+
+              # Use Extended Regular Expressions(ERE)
+              --extended-regexp
+
+              # Match all non stable release tags
+              --regexp='(alpha|b|beta|dev|rc)'
+            )
+            if ! stable_release_tags="$(
+              grep "${grep_opts[@]}" <<<"${release_tags}"
+              )"; then
+              printf \
+                'Error: Unable to filter out stable release tags from the release tags.\n' \
+                1>&2
+              exit 2
+            fi
+
+            printf 'Info: Determining the latest stable release tag...\n'
+            head_opts=(
+              --lines=1
+            )
+            if ! latest_stable_release_tag="$(
+              head \
+                "${head_opts[@]}" \
+                <<<"${stable_release_tags}"
+              )"; then
+              printf \
+                'Error: Unable to determine the latest stable release tag.\n' \
+                1>&2
+              exit 2
+            fi
+            printf \
+              'Info: Latest stable release tag determined to be %s.\n' \
+              "${latest_stable_release_tag}"
+
+            printf \
+              'Info: Determining the latest stable release version...\n'
+            # Upstream uses verbatim version string as the name of the release tag
+            latest_stable_release_version="${latest_stable_release_tag}"
+            printf \
+              'Info: The latest stable release version determined to be "%s".\n' \
+              "${latest_stable_release_version}"
+
+            printf \
+              'Info: Replacing the version string in the Snapcraft recipe...\n'
+            sed_opts=(
+              # Transform file in-place
+              --in-place
+
+              # Use Extended Regular Expressions(ERE)
+              --regexp-extended
+
+              # Update the value of the version property
+              --expression="s/^(version: ).*$/\\1${latest_stable_release_version}/"
+            )
+            if ! sed "${sed_opts[@]}" snap/snapcraft.yaml; then
+              printf \
+                'Error: Unable to replace the version string in the Snapcraft recipe.\n' \
+                1>&2
+              exit 2
+            fi
+
+            printf 'Info: Operation completed without errors.\n'
